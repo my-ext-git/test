@@ -1,0 +1,49 @@
+name: test
+on: [push]
+image: docker:stable
+services:
+  - docker:19.03.0-dind
+
+stages:
+  - build
+  - package
+  - deploy
+
+variables:
+  DOCKER_DRIVER: overlay2
+  DOCKER_TLS_CERTDIR: ''
+
+build:
+  image: gradle:6.0.1
+  stage: build
+  script:
+    - cd botsby-app/
+    - gradle build -x test --no-daemon -Dorg.gradle.jvmargs="-Xmx1536m" -Dfile.encoding="UTF-8"
+  artifacts:
+    paths:
+      - botsby-app/build/libs/*.jar
+
+package:
+  stage: package
+  before_script:
+    - pwd
+    - ls -l
+  script:
+    - docker build -t registry.gitlab.com/botsby/api ./botsby-app
+    - docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com
+    - docker push registry.gitlab.com/botsby/api
+
+deploy_staging:
+  stage: deploy
+  script:
+    - apk upgrade && apk update
+    - apk add openssh-client
+    - ssh -o StrictHostKeyChecking=no $STAGING_SERVER_USER@$STAGING_SERVER docker login -u gitlab-ci-token -p $CI_BUILD_TOKEN registry.gitlab.com
+    - ssh -o StrictHostKeyChecking=no $STAGING_SERVER_USER@$STAGING_SERVER docker pull registry.gitlab.com/botsby/app
+    - ssh -o StrictHostKeyChecking=no $STAGING_SERVER_USER@$STAGING_SERVER "docker container stop botsby_app && docker container rm botsby_app || true"
+    - ssh -o StrictHostKeyChecking=no $STAGING_SERVER_USER@$STAGING_SERVER docker run --name botsby_app -p 8080:8080 -d registry.gitlab.com/botsby/app
+  environment:
+    name: staging
+    url: https://botsby.com
+  only:
+    - master
